@@ -186,7 +186,7 @@ jobs:
           patch_file="/work/patches/${spec_name}.patch"
           if [[ -f "$patch_file" ]]; then
             log "applying per-spec patch: $patch_file"
-            git -C "$SPECS" apply --verbose "$patch_file"
+            git -C "$SPECS" apply --unidiff-zero --verbose "$patch_file"
           else
             log "no per-spec patch found: $patch_file"
           fi
