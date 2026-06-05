@@ -147,7 +147,34 @@ jobs:
           out="$RESULTS/$subdir"
           mkdir -p "$out/srpm" "$out/rpm"
           cd "$pkgdir"
+
+          # Download SourceN files into the same directory rpmbuild will use as _sourcedir.
+          # Some SonicDE specs use URL fragments like:
+          #   .../%{version}.tar.gz#/%{name}-%{version}.tar.gz
+          # Depending on spectool/rpm behavior, the downloaded file may be named
+          # "6.6.0.tar.gz" while rpmbuild expects "sonic-silver-theme-6.6.0.tar.gz".
           spectool -g -C "$pkgdir" "$spec"
+
+          while IFS= read -r src; do
+            [[ -n "$src" ]] || continue
+            url="${src%%#/*}"
+            expected="${src##*#/}"
+            [[ "$expected" == "$src" ]] && expected="${src##*/}"
+            actual="${url##*/}"
+
+            if [[ ! -f "$pkgdir/$expected" && -f "$pkgdir/$actual" ]]; then
+              cp -f "$pkgdir/$actual" "$pkgdir/$expected"
+            fi
+
+            if [[ ! -f "$pkgdir/$expected" ]]; then
+              echo "::error::Missing source file: $pkgdir/$expected"
+              echo "Source entry: $src"
+              echo "Files in $pkgdir:"
+              ls -la "$pkgdir"
+              exit 1
+            fi
+          done < <(rpmspec -P "$spec" | awk '/^Source[0-9]*:/ {print $2}')
+
           rpmbuild -bs "$spec" --define "_sourcedir $pkgdir" --define "_srcrpmdir $out/srpm"
           srpm="$(find "$out/srpm" -name '*.src.rpm' -print -quit)"
           sign_rpm "$srpm"
