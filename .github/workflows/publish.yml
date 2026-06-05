@@ -249,12 +249,34 @@ jobs:
             echo "--- SRPM signing deferred until final publish step ---"
 
             echo "--- mock build ---"
-            mock -r "$MOCK_CONFIG" \
+            if ! mock -r "$MOCK_CONFIG" \
               --uniqueext "$subdir" \
               --enable-network \
               --resultdir "$out/rpm" \
               --addrepo "file://$LOCAL_REPO" \
-              --rebuild "$srpm"
+              --rebuild "$srpm"; then
+              echo "ERROR: mock build failed for $subdir"
+              echo "--- mock result files after failure ---"
+              find "$out/rpm" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort || true
+
+              for log in root.log build.log state.log hw_info.log installed_pkgs.log; do
+                if [[ -f "$out/rpm/$log" ]]; then
+                  echo ""
+                  echo "===== $subdir :: $log ====="
+                  sed -n '1,240p' "$out/rpm/$log" || true
+                  echo "===== end $subdir :: $log ====="
+                fi
+              done
+
+              echo "--- last 240 lines of all mock logs ---"
+              for log in "$out/rpm"/*.log; do
+                [[ -f "$log" ]] || continue
+                echo ""
+                echo "===== tail $(basename "$log") ====="
+                tail -n 240 "$log" || true
+              done
+              exit 1
+            fi
 
             echo "--- mock result files ---"
             find "$out/rpm" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
