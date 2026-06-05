@@ -1,0 +1,210 @@
+name: Build and publish SonicDE RPM repo
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: sonicde-rpm-repo
+  cancel-in-progress: false
+
+env:
+  SONICDE_GIT_URL: https://pc-rytteren.dk/forge/anders/SonicDE-rpmspecs.git
+  SONICDE_GIT_REF: master
+  FEDORA_IMAGE: fedora:latest
+  RPM_ARCH: x86_64
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Check GitHub Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$(gh api repos/${{ github.repository }}/pages --jq .build_type 2>/dev/null || true)" = workflow ] || {
+            echo "::error::Enable GitHub Pages with Source set to GitHub Actions."
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - id: gpg-cache
+        uses: actions/cache@v4
+        with:
+          path: gpg-key
+          key: sonicde-gpg-key-v1
+
+      - name: Generate GPG key
+        if: steps.gpg-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p gpg-key
+          gpg --batch --generate-key <<'KEY'
+          Key-Type: RSA
+          Key-Length: 4096
+          Key-Usage: sign
+          Name-Real: SonicDE RPM Repo Signing
+          Name-Email: sonicde@example.invalid
+          Expire-Date: 0
+          %no-protection
+          %commit
+          KEY
+          key="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"
+          gpg --armor --export-secret-keys "$key" > gpg-key/private.asc
+          echo "$key" > gpg-key/fingerprint.txt
+
+      - id: upstream
+        run: |
+          sha="$(git ls-remote "$SONICDE_GIT_URL" "$SONICDE_GIT_REF" | awk '{print $1}')"
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .sonicde-upstream-sha
+          key: sonicde-built-${{ steps.upstream.outputs.sha }}
+
+      - name: Build repo
+        id: build
+        if: github.event_name == 'workflow_dispatch' || steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker run --privileged --rm \
+            -e SONICDE_GIT_URL -e SONICDE_GIT_REF -e RPM_ARCH \
+            -e UPSTREAM_SHA='${{ steps.upstream.outputs.sha }}' \
+            -e GITHUB_REPOSITORY -e GITHUB_REPOSITORY_OWNER \
+            -v "$PWD:/work" -w /work "$FEDORA_IMAGE" bash -euxo pipefail <<'EOF'
+          dnf -y install createrepo_c git gnupg2 mock rpm-build rpmdevtools rpm-sign
+
+          FEDORA_VERSION="$(rpm -E %fedora)"
+          MOCK_CONFIG="fedora-${FEDORA_VERSION}-${RPM_ARCH}"
+          GPG_FINGERPRINT="$(cat /work/gpg-key/fingerprint.txt)"
+          GNUPGHOME=/root/.gnupg
+          export GNUPGHOME
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import /work/gpg-key/private.asc
+          cat >/root/.rpmmacros <<RPMMACROS
+          %_signature gpg
+          %_gpg_name $GPG_FINGERPRINT
+          %_gpg_path $GNUPGHOME
+          %_gpgbin /usr/bin/gpg
+          %_gpg_digest_algo sha256
+          RPMMACROS
+
+          sign_rpm() {
+            rpm --checksig "$1" || true
+            rpmsign --addsign "$1"
+            rpm --checksig "$1"
+          }
+          export -f sign_rpm
+          export GPG_FINGERPRINT GNUPGHOME
+
+          SPECS=/work/sonicde-rpmspecs
+          LOCAL_REPO=/work/localrepo
+          RESULTS=/work/mock-results
+          WWW=/work/wwwroot
+          BIN_REPO="$WWW/fedora-${FEDORA_VERSION}/${RPM_ARCH}"
+          SRC_REPO="$WWW/fedora-${FEDORA_VERSION}/source"
+
+          rm -rf "$SPECS" "$LOCAL_REPO" "$RESULTS" "$WWW"
+          mkdir -p "$LOCAL_REPO" "$RESULTS" "$BIN_REPO" "$SRC_REPO"
+          gpg --batch --armor --export "$GPG_FINGERPRINT" >"$WWW/RPM-GPG-KEY-sonicde"
+          createrepo_c "$LOCAL_REPO"
+
+          git clone "$SONICDE_GIT_URL" "$SPECS"
+          git -C "$SPECS" checkout "$SONICDE_GIT_REF"
+          [[ ! -x /work/scripts/patch-sonicde-specs.sh ]] || /work/scripts/patch-sonicde-specs.sh "$SPECS"
+
+          export SPECS LOCAL_REPO RESULTS SRC_REPO MOCK_CONFIG
+          cat >/usr/local/bin/copr-cli <<'SHIM'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [[ "${1:-}" == buildscm ]] || exit 2
+          shift
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --subdir) subdir="$2"; shift 2 ;;
+              --spec) spec="$2"; shift 2 ;;
+              *) shift ;;
+            esac
+          done
+          : "${subdir:?}" "${spec:?}"
+
+          pkgdir="$SPECS/$subdir"
+          out="$RESULTS/$subdir"
+          mkdir -p "$out/srpm" "$out/rpm"
+          cd "$pkgdir"
+          spectool -g -R "$spec" || true
+          rpmbuild -bs "$spec" --define "_sourcedir $pkgdir" --define "_srcrpmdir $out/srpm"
+          srpm="$(find "$out/srpm" -name '*.src.rpm' -print -quit)"
+          sign_rpm "$srpm"
+          mock -r "$MOCK_CONFIG" --enable-network --resultdir "$out/rpm" --addrepo "file://$LOCAL_REPO" --rebuild "$srpm"
+          while IFS= read -r rpm; do
+            sign_rpm "$rpm"
+            cp -f "$rpm" "$LOCAL_REPO/"
+          done < <(find "$out/rpm" -name '*.rpm' ! -name '*.src.rpm' -print)
+          cp -f "$srpm" "$SRC_REPO/"
+          createrepo_c --update "$LOCAL_REPO"
+          gpg --batch --yes --armor --detach-sign "$LOCAL_REPO/repodata/repomd.xml"
+          SHIM
+          chmod +x /usr/local/bin/copr-cli
+
+          cd "$SPECS"
+          ./copr-build.sh all
+
+          cp -f "$LOCAL_REPO"/*.rpm "$BIN_REPO/"
+          createrepo_c "$BIN_REPO"
+          createrepo_c "$SRC_REPO"
+          gpg --batch --yes --armor --detach-sign "$BIN_REPO/repodata/repomd.xml"
+          gpg --batch --yes --armor --detach-sign "$SRC_REPO/repodata/repomd.xml"
+
+          cat >"$WWW/sonicde-fedora-${FEDORA_VERSION}.repo" <<REPO
+          [sonicde-fedora-${FEDORA_VERSION}]
+          name=SonicDE Fedora ${FEDORA_VERSION}
+          baseurl=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/fedora-${FEDORA_VERSION}/${RPM_ARCH}
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/RPM-GPG-KEY-sonicde
+          skip_if_unavailable=True
+          REPO
+
+          cat >"$WWW/index.html" <<HTML
+          <!doctype html><html><body><h1>SonicDE RPM Repo</h1>
+          <p>Built from ${UPSTREAM_SHA} for Fedora ${FEDORA_VERSION} ${RPM_ARCH}.</p>
+          <p><a href="sonicde-fedora-${FEDORA_VERSION}.repo">Download .repo file</a></p>
+          <p><a href="RPM-GPG-KEY-sonicde">Download GPG public key</a></p>
+          <p><a href="fedora-${FEDORA_VERSION}/${RPM_ARCH}/">Browse RPMs</a></p>
+          </body></html>
+          HTML
+
+          echo "$UPSTREAM_SHA" >/work/.sonicde-upstream-sha
+          EOF
+
+      - if: steps.build.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: wwwroot
+
+      - if: steps.build.outcome == 'success'
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - if: steps.build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .sonicde-upstream-sha
+          key: sonicde-built-${{ steps.upstream.outputs.sha }}
