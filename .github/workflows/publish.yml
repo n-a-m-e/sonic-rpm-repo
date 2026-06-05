@@ -86,7 +86,7 @@ jobs:
             -e UPSTREAM_SHA='${{ steps.upstream.outputs.sha }}' \
             -e GITHUB_REPOSITORY -e GITHUB_REPOSITORY_OWNER \
             -v "$PWD:/work" -w /work "$FEDORA_IMAGE" bash -euxo pipefail <<'EOF'
-          dnf -y install createrepo_c git gnupg2 mock rpm-build rpmdevtools rpm-sign
+          dnf -y install createrepo_c curl findutils git gnupg2 mock rpm-build rpmdevtools rpm-sign sed tar util-linux
 
           FEDORA_VERSION="$(rpm -E %fedora)"
           MOCK_CONFIG="fedora-${FEDORA_VERSION}-${RPM_ARCH}"
@@ -105,9 +105,11 @@ jobs:
           RPMMACROS
 
           sign_rpm() {
-            rpm --checksig "$1" || true
-            rpmsign --addsign "$1"
-            rpm --checksig "$1"
+            local rpm="$1"
+            echo "Signing: $rpm"
+            rpm --checksig "$rpm" || true
+            flock /work/sign.lock rpmsign --addsign "$rpm"
+            rpm --checksig "$rpm"
           }
           export -f sign_rpm
           export GPG_FINGERPRINT GNUPGHOME
@@ -124,15 +126,24 @@ jobs:
           gpg --batch --armor --export "$GPG_FINGERPRINT" >"$WWW/RPM-GPG-KEY-sonicde"
           createrepo_c "$LOCAL_REPO"
 
+          echo "Fedora version: $FEDORA_VERSION"
+          echo "Mock config:     $MOCK_CONFIG"
+          echo "RPM arch:        $RPM_ARCH"
+          echo "Upstream URL:    $SONICDE_GIT_URL"
+          echo "Upstream ref:    $SONICDE_GIT_REF"
+          echo "Upstream SHA:    $UPSTREAM_SHA"
+
           git clone "$SONICDE_GIT_URL" "$SPECS"
           git -C "$SPECS" checkout "$SONICDE_GIT_REF"
+          git -C "$SPECS" rev-parse HEAD
           [[ ! -x /work/scripts/patch-sonicde-specs.sh ]] || /work/scripts/patch-sonicde-specs.sh "$SPECS"
 
           export SPECS LOCAL_REPO RESULTS SRC_REPO MOCK_CONFIG
           cat >/usr/local/bin/copr-cli <<'SHIM'
           #!/usr/bin/env bash
           set -euo pipefail
-          [[ "${1:-}" == buildscm ]] || exit 2
+
+          [[ "${1:-}" == buildscm ]] || { echo "fake copr-cli only supports buildscm" >&2; exit 2; }
           shift
 
           subdir=""
@@ -144,55 +155,116 @@ jobs:
               *) shift ;;
             esac
           done
-          : "${subdir:?}" "${spec:?}"
+          : "${subdir:?missing --subdir}" "${spec:?missing --spec}"
 
           pkgdir="$SPECS/$subdir"
           out="$RESULTS/$subdir"
           mkdir -p "$out/srpm" "$out/rpm"
-          cd "$pkgdir"
 
-          echo "::group::Prepare sources for $subdir"
-          echo "pkgdir=$pkgdir"
-          echo "spec=$spec"
-          spectool -l "$spec" || true
-          spectool -g -C "$pkgdir" "$spec"
+          {
+            echo "subdir=$subdir"
+            echo "pkgdir=$pkgdir"
+            echo "spec=$spec"
+            echo "out=$out"
+            cd "$pkgdir"
 
-          # Some SonicDE specs use Source URLs like:
-          #   .../%{version}.tar.gz#/%{name}-%{version}.tar.gz
-          # If spectool saves the URL basename instead of the fragment basename,
-          # copy it to the exact filename rpmbuild expects.
-          while IFS= read -r source_url; do
-            expected="${source_url##*#/}"
-            expected="${expected##*/}"
-            clean_url="${source_url%%#/*}"
-            url_base="${clean_url##*/}"
-            [[ -z "$expected" ]] && continue
+            echo "--- initial package directory ---"
+            find "$pkgdir" -maxdepth 2 -type f -printf '%P\n' | sort
 
-            if [[ ! -f "$pkgdir/$expected" ]]; then
-              if [[ -f "$pkgdir/$url_base" ]]; then
-                cp -f "$pkgdir/$url_base" "$pkgdir/$expected"
-              else
-                echo "Expected source missing: $expected"
-                echo "Trying fallback curl from: $clean_url"
-                curl -fL --retry 3 --retry-delay 5 -o "$pkgdir/$expected" "$clean_url"
+            if grep -q '%{url}' "$spec"; then
+              spec_url="$(awk 'BEGIN{IGNORECASE=1} /^URL:[[:space:]]*/ {sub(/^URL:[[:space:]]*/, ""); print; exit}' "$spec")"
+              echo "Spec contains %{url}; URL tag is: ${spec_url:-<empty>}"
+              if [[ -n "$spec_url" ]]; then
+                sed -i "s|%{url}|$spec_url|g" "$spec"
+                echo "Patched %{url} in $spec"
               fi
             fi
-          done < <(rpmspec -P "$spec" | awk '/^Source[0-9]*:/ {print $2}')
 
-          find "$pkgdir" -maxdepth 1 -type f -printf '%f\n' | sort
-          echo "::endgroup::"
+            echo "--- Source lines after URL patch ---"
+            rpmspec -P "$spec" | grep -E '^Source[0-9]*:' || true
 
-          rpmbuild -bs "$spec" --define "_sourcedir $pkgdir" --define "_srcrpmdir $out/srpm"
-          srpm="$(find "$out/srpm" -name '*.src.rpm' -print -quit)"
-          sign_rpm "$srpm"
-          mock -r "$MOCK_CONFIG" --enable-network --resultdir "$out/rpm" --addrepo "file://$LOCAL_REPO" --rebuild "$srpm"
-          while IFS= read -r rpm; do
-            sign_rpm "$rpm"
-            cp -f "$rpm" "$LOCAL_REPO/"
-          done < <(find "$out/rpm" -name '*.rpm' ! -name '*.src.rpm' -print)
-          cp -f "$srpm" "$SRC_REPO/"
-          createrepo_c --update "$LOCAL_REPO"
-          gpg --batch --yes --armor --detach-sign "$LOCAL_REPO/repodata/repomd.xml"
+            echo "--- spectool -l ---"
+            spectool -l "$spec" || true
+
+            echo "--- spectool download ---"
+            spectool -g -C "$pkgdir" "$spec" || true
+
+            echo "--- files after spectool ---"
+            find "$pkgdir" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+            echo "--- verifying/downloading expected sources ---"
+            while IFS= read -r source_url; do
+              [[ -n "$source_url" ]] || continue
+              expected="${source_url##*#/}"
+              expected="${expected##*/}"
+              clean_url="${source_url%%#/*}"
+              url_base="${clean_url##*/}"
+
+              echo "source_url=$source_url"
+              echo "clean_url=$clean_url"
+              echo "url_base=$url_base"
+              echo "expected=$expected"
+
+              if [[ -f "$pkgdir/$expected" ]]; then
+                echo "OK: found expected source $expected"
+                continue
+              fi
+
+              if [[ -f "$pkgdir/$url_base" ]]; then
+                echo "Copying downloaded basename $url_base -> $expected"
+                cp -f "$pkgdir/$url_base" "$pkgdir/$expected"
+                continue
+              fi
+
+              if [[ "$clean_url" == *'%{'* ]]; then
+                echo "ERROR: source URL still contains an unexpanded rpm macro: $clean_url" >&2
+                rpmspec -P "$spec" | sed -n '1,120p' >&2 || true
+                exit 1
+              fi
+
+              echo "Fallback curl: $clean_url -> $expected"
+              curl -fL --retry 3 --retry-delay 5 -o "$pkgdir/$expected" "$clean_url"
+            done < <(rpmspec -P "$spec" | awk '/^Source[0-9]*:/ {print $2}')
+
+            echo "--- final package directory before rpmbuild -bs ---"
+            find "$pkgdir" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+            echo "--- building SRPM ---"
+            rpmbuild -bs "$spec" \
+              --define "_sourcedir $pkgdir" \
+              --define "_srcrpmdir $out/srpm"
+
+            srpm="$(find "$out/srpm" -name '*.src.rpm' -print -quit)"
+            [[ -n "$srpm" ]] || { echo "ERROR: no SRPM produced for $subdir" >&2; exit 1; }
+            echo "SRPM=$srpm"
+            rpm -qpi "$srpm" || true
+
+            sign_rpm "$srpm"
+
+            echo "--- mock build ---"
+            mock -r "$MOCK_CONFIG" \
+              --enable-network \
+              --resultdir "$out/rpm" \
+              --addrepo "file://$LOCAL_REPO" \
+              --rebuild "$srpm"
+
+            echo "--- mock result files ---"
+            find "$out/rpm" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+            echo "--- signing and adding binary RPMs to local repo ---"
+            while IFS= read -r rpm; do
+              sign_rpm "$rpm"
+              cp -f "$rpm" "$out/"
+            done < <(find "$out/rpm" -name '*.rpm' ! -name '*.src.rpm' -print)
+
+            cp -f "$srpm" "$SRC_REPO/"
+          } 2>&1 | sed -u "s/^/[$subdir] /"
+
+          flock /work/localrepo.lock bash -euxo pipefail -c '
+            cp -f "$1"/*.rpm "$2"/ 2>/dev/null || true
+            createrepo_c --update "$2"
+            gpg --batch --yes --armor --detach-sign "$2/repodata/repomd.xml"
+          ' _ "$out" "$LOCAL_REPO"
           SHIM
           chmod +x /usr/local/bin/copr-cli
 
