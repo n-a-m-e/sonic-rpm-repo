@@ -237,6 +237,7 @@ jobs:
 
             echo "--- mock build ---"
             mock -r "$MOCK_CONFIG" \
+              --uniqueext "$subdir" \
               --enable-network \
               --resultdir "$out/rpm" \
               --addrepo "file://$LOCAL_REPO" \
