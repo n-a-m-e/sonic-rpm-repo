@@ -1,7 +1,17 @@
 diff --git a/sonic-silver-theme/sonic-silver-theme.spec b/sonic-silver-theme/sonic-silver-theme.spec
 --- a/sonic-silver-theme/sonic-silver-theme.spec
 +++ b/sonic-silver-theme/sonic-silver-theme.spec
-@@ -46,7 +46,7 @@ Highly customizable theming for the KDE Plasma desktop. Install, and enable in System Settings -> Appearance -> Global Themes (or individually in Window Decorations, Application Style and Icons).
+@@ -19,9 +19,6 @@ BuildRequires:  extra-cmake-modules
+ BuildRequires:  fdupes
+ BuildRequires:  cmake(KF6Config)
+ BuildRequires:  cmake(KF6IconThemes)
+-BuildRequires:  cmake(Qt6ExamplesAssetDownloaderPrivate)
+-BuildRequires:  pkgconfig(Qt6QmlAssetDownloader)
+-BuildRequires:  qt6-qtbase-theme-gtk3
+ 
+ Requires:       kf6-kirigami2
+ Requires:       kf6-qqc2-desktop-style
+@@ -46,7 +43,7 @@ Highly customizable theming for the KDE Plasma desktop. Install, and enable in System Settings -> Appearance -> Global Themes (or individually in Window Decorations, Application Style and Icons).
  
  %prep
 -%autosetup -p1
