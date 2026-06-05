@@ -1,0 +1,11 @@
+diff --git a/sonic-silver-theme/sonic-silver-theme.spec b/sonic-silver-theme/sonic-silver-theme.spec
+--- a/sonic-silver-theme/sonic-silver-theme.spec
++++ b/sonic-silver-theme/sonic-silver-theme.spec
+@@ -46,7 +46,7 @@ Highly customizable theming for the KDE Plasma desktop. Install, and enable in System Settings -> Appearance -> Global Themes (or individually in Window Decorations, Application Style and Icons).
+ 
+ %prep
+-%autosetup -p1
++%autosetup -p1 -n silver-theme-%{version}
+ 
+ %build
+ %cmake_kf6 \
