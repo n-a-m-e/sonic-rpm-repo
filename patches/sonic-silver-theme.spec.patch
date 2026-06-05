@@ -1,4 +1,5 @@
 diff --git a/sonic-silver-theme/sonic-silver-theme.spec b/sonic-silver-theme/sonic-silver-theme.spec
+index 1111111..2222222 100644
 --- a/sonic-silver-theme/sonic-silver-theme.spec
 +++ b/sonic-silver-theme/sonic-silver-theme.spec
 @@ -19,9 +19,6 @@ BuildRequires:  extra-cmake-modules
