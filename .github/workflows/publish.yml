@@ -147,18 +147,23 @@ jobs:
           out="$RESULTS/$subdir"
           mkdir -p "$out/srpm" "$out/rpm"
           cd "$pkgdir"
-          spectool -g -R "$spec" || true
+          spectool -g -C "$pkgdir" "$spec"
           rpmbuild -bs "$spec" --define "_sourcedir $pkgdir" --define "_srcrpmdir $out/srpm"
           srpm="$(find "$out/srpm" -name '*.src.rpm' -print -quit)"
           sign_rpm "$srpm"
           mock -r "$MOCK_CONFIG" --enable-network --resultdir "$out/rpm" --addrepo "file://$LOCAL_REPO" --rebuild "$srpm"
           while IFS= read -r rpm; do
             sign_rpm "$rpm"
-            cp -f "$rpm" "$LOCAL_REPO/"
           done < <(find "$out/rpm" -name '*.rpm' ! -name '*.src.rpm' -print)
-          cp -f "$srpm" "$SRC_REPO/"
-          createrepo_c --update "$LOCAL_REPO"
-          gpg --batch --yes --armor --detach-sign "$LOCAL_REPO/repodata/repomd.xml"
+
+          # Tiers run packages in parallel, so protect the shared local repo.
+          (
+            flock 9
+            cp -f "$out/rpm"/*.rpm "$LOCAL_REPO/" 2>/dev/null || true
+            cp -f "$srpm" "$SRC_REPO/"
+            createrepo_c --update "$LOCAL_REPO"
+            gpg --batch --yes --armor --detach-sign "$LOCAL_REPO/repodata/repomd.xml"
+          ) 9>/work/.localrepo.lock
           SHIM
           chmod +x /usr/local/bin/copr-cli
 
