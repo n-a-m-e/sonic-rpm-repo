@@ -81,7 +81,7 @@ jobs:
         id: build
         if: github.event_name == 'workflow_dispatch' || steps.cache.outputs.cache-hit != 'true'
         run: |
-          docker run --privileged --rm \
+          docker run -i --privileged --rm \
             -e SONICDE_GIT_URL -e SONICDE_GIT_REF -e RPM_ARCH \
             -e UPSTREAM_SHA='${{ steps.upstream.outputs.sha }}' \
             -e GITHUB_REPOSITORY -e GITHUB_REPOSITORY_OWNER \
