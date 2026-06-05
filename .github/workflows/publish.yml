@@ -174,6 +174,19 @@ jobs:
               fi
             fi
 
+
+            echo "--- Fedora compatibility patch: remove unavailable BuildRequires ---"
+            # These EL/COPR spec dependencies are not provided by Fedora 44+ repositories
+            # and currently stop mock at the builddep phase before compilation starts.
+            sed -i -E \
+              -e '/^[[:space:]]*BuildRequires:[[:space:]]*cmake\(Qt6ExamplesAssetDownloaderPrivate\)[[:space:]]*$/d' \
+              -e '/^[[:space:]]*BuildRequires:[[:space:]]*pkgconfig\(Qt6QmlAssetDownloader\)[[:space:]]*$/d' \
+              -e '/^[[:space:]]*BuildRequires:[[:space:]]*qt6-qtbase-theme-gtk3[[:space:]]*$/d' \
+              "$spec"
+
+            echo "--- BuildRequires after Fedora compatibility patch ---"
+            rpmspec -P "$spec" | grep -E '^BuildRequires:' || true
+
             echo "--- Source lines after URL patch ---"
             rpmspec -P "$spec" | grep -E '^Source[0-9]*:' || true
 
@@ -260,6 +273,9 @@ jobs:
           ' _ "$out" "$LOCAL_REPO"
           SHIM
           chmod +x /usr/local/bin/copr-cli
+
+          echo "--- one-time mock initialization to warm caches ---"
+          mock -r "$MOCK_CONFIG" --init
 
           cd "$SPECS"
           ./copr-build.sh all
