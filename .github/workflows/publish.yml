@@ -156,7 +156,6 @@ jobs:
             sign_rpm "$rpm"
           done < <(find "$out/rpm" -name '*.rpm' ! -name '*.src.rpm' -print)
 
-          # Tiers run packages in parallel, so protect the shared local repo.
           (
             flock 9
             cp -f "$out/rpm"/*.rpm "$LOCAL_REPO/" 2>/dev/null || true
