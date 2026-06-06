@@ -1,0 +1,8 @@
+diff --git a/kstyle/config/breezestyleconfigmodule.h b/kstyle/config/breezestyleconfigmodule.h
+--- a/kstyle/config/breezestyleconfigmodule.h
++++ b/kstyle/config/breezestyleconfigmodule.h
+@@ -8,0 +9 @@
++#include <QVariantList>
+@@ -23 +24 @@
+-    ConfigurationModule(QObject *parent, const KPluginMetaData &data);
++    ConfigurationModule(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
