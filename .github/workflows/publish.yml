@@ -191,6 +191,14 @@ jobs:
             log "no per-spec patch found: $patch_file"
           fi
 
+          source_patch="/work/patches/${spec_name%.spec}.source.patch"
+          if [[ -f "$source_patch" ]]; then
+            log "copying source patch into package dir: $source_patch"
+            cp -f "$source_patch" "$pkgdir/"
+          else
+            log "no source patch found: $source_patch"
+          fi
+
           spec_url="$(awk 'BEGIN{IGNORECASE=1} /^URL:[[:space:]]*/ {sub(/^URL:[[:space:]]*/, ""); print; exit}' "$spec")"
           if [[ -z "$spec_url" ]]; then
             log "ERROR: no URL: tag found in $spec"
