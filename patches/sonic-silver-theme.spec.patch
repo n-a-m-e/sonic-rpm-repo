@@ -1,10 +1,18 @@
 diff --git a/sonic-silver-theme/sonic-silver-theme.spec b/sonic-silver-theme/sonic-silver-theme.spec
 --- a/sonic-silver-theme/sonic-silver-theme.spec
 +++ b/sonic-silver-theme/sonic-silver-theme.spec
-@@ -48,3 +47,0 @@
+@@ -48,3 +48,0 @@
 -BuildRequires:  cmake(Qt6ExamplesAssetDownloaderPrivate)
 -BuildRequires:  pkgconfig(Qt6QmlAssetDownloader)
 -BuildRequires:  qt6-qtbase-theme-gtk3
 @@ -56 +53 @@
 -%autosetup -p1
 +%autosetup -p1 -n silver-theme-%{version}
+@@ -60 +57,0 @@
+-%if %[(0%{?rhel} >= 10)]
+@@ -65 +61,4 @@
+-%endif
++%cmake_build
++
++%install
++%cmake_install
