@@ -1,0 +1,16 @@
+diff --git a/kstyle/config/breezestyleconfigmodule.h b/kstyle/config/breezestyleconfigmodule.h
+--- a/kstyle/config/breezestyleconfigmodule.h
++++ b/kstyle/config/breezestyleconfigmodule.h
+@@ -8,0 +9 @@
++#include <QVariantList>
+@@ -23 +24 @@
+-    ConfigurationModule(QObject *parent, const KPluginMetaData &data);
++    ConfigurationModule(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
+diff --git a/kstyle/config/breezestyleconfigmodule.cpp b/kstyle/config/breezestyleconfigmodule.cpp
+--- a/kstyle/config/breezestyleconfigmodule.cpp
++++ b/kstyle/config/breezestyleconfigmodule.cpp
+@@ -21 +21 @@
+-ConfigurationModule::ConfigurationModule(QObject *parent, const KPluginMetaData &data)
++ConfigurationModule::ConfigurationModule(QObject *parent, const KPluginMetaData &data, const QVariantList &args)
+@@ -23,0 +24 @@
++    Q_UNUSED(args);
