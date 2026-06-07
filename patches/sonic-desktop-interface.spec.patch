@@ -1,0 +1,20 @@
+diff --git a/sonic-desktop-interface/sonic-desktop-interface.spec b/sonic-desktop-interface/sonic-desktop-interface.spec
+--- a/sonic-desktop-interface/sonic-desktop-interface.spec
++++ b/sonic-desktop-interface/sonic-desktop-interface.spec
+@@ -330 +330 @@
+-#%{_kf6_qtplugindir}/plasma/kcminit/kcm_touchpad_init.so
++%{_kf6_qtplugindir}/plasma/kcminit/kcm_touchpad_init.so
+@@ -346,2 +346,2 @@
+-#%{_kf6_datadir}/kcmmouse/
+-#%{_kf6_qtplugindir}/plasma/kcminit/kcm_mouse_init.so
++%{_kf6_datadir}/kcmmouse/
++%{_kf6_qtplugindir}/plasma/kcminit/kcm_mouse_init.so
+@@ -351 +351 @@
+-#%{_datadir}/kglobalaccel/org.kde.touchpadshortcuts.desktop
++%{_datadir}/kglobalaccel/org.kde.touchpadshortcuts.desktop
+@@ -354 +354 @@
+-#%{_kf6_datadir}/dbus-1/interfaces/org.kde.touchpad.xml
++%{_kf6_datadir}/dbus-1/interfaces/org.kde.touchpad.xml
+@@ -362 +362 @@
+-#%{_datadir}/icons/hicolor/*/*/*
++%{_datadir}/icons/hicolor/*/devices/input-touchpad.*
