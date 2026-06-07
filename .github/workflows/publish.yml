@@ -2,21 +2,11 @@ name: Build and publish SonicDE RPM repo
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 */6 * * *"
+  schedule: [{ cron: "17 */6 * * *" }]
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: sonicde-rpm-repo
-  cancel-in-progress: false
-
-defaults:
-  run:
-    shell: bash
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: sonicde-rpm-repo, cancel-in-progress: false }
+defaults: { run: { shell: bash } }
 
 env:
   SPECS_GIT_URL: https://pc-rytteren.dk/forge/anders/SonicDE-rpmspecs.git
@@ -28,22 +18,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/configure-pages@v5
-
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        with: { persist-credentials: false }
 
-      - name: Restore GPG key
-        id: gpg
+      - id: gpg
         uses: actions/cache@v4
-        with:
-          path: .gpg
-          key: sonicde-gpg-key-v1
+        with: { path: .gpg, key: sonicde-gpg-key-v1 }
 
-      - name: Generate GPG key
-        if: steps.gpg.outputs.cache-hit != 'true'
+      - if: steps.gpg.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
           mkdir -p .gpg && chmod 700 .gpg
           export GNUPGHOME="$PWD/.gpg"
           cat >gpg-batch <<'EOF'
@@ -59,57 +42,50 @@ jobs:
           EOF
           gpg --batch --pinentry-mode loopback --generate-key gpg-batch
 
-      - name: Check upstream
-        id: upstream
+      - id: upstream
         run: |
-          set -euo pipefail
           sha="$(git ls-remote "$SPECS_GIT_URL" "refs/heads/$SPECS_GIT_REF" | awk '{print $1}')"
           test -n "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Restore build marker
-        id: marker
+      - id: marker
         uses: actions/cache/restore@v4
         with:
           path: .built-upstream-sha
           key: sonicde-built-${{ steps.upstream.outputs.sha }}
 
-      - name: Restore RPM cache
-        if: github.event_name == 'workflow_dispatch' || steps.marker.outputs.cache-hit != 'true'
+      - if: github.event_name == 'workflow_dispatch' || steps.marker.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: rpm-cache
           key: sonicde-rpms-${{ runner.os }}-${{ steps.upstream.outputs.sha }}-${{ hashFiles('patches/**', '.github/workflows/*.yml') }}-${{ github.run_id }}
           restore-keys: |
             sonicde-rpms-${{ runner.os }}-${{ steps.upstream.outputs.sha }}-${{ hashFiles('patches/**', '.github/workflows/*.yml') }}-
+            sonicde-rpms-${{ runner.os }}-${{ steps.upstream.outputs.sha }}-
+            sonicde-rpms-${{ runner.os }}-
 
-      - name: Build, sign, and stage repo
-        id: build
+      - id: build
         if: github.event_name == 'workflow_dispatch' || steps.marker.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
           mkdir -p rpm-cache
           docker run -i --privileged --rm \
             -e SPECS_GIT_URL -e SPECS_GIT_REF -e RPM_ARCH \
+            -e UPSTREAM_SHA='${{ steps.upstream.outputs.sha }}' \
             -e REPO_OWNER='${{ github.repository_owner }}' \
             -e REPO_NAME='${{ github.event.repository.name }}' \
             -v "$PWD:/work" -v "$PWD/rpm-cache:/rpm-cache" -w /work \
             fedora:latest bash -euxo pipefail <<'EOF'
-          dnf -y install curl createrepo_c dnf-plugins-core findutils git gnupg2 mock patch rpm-build rpm-sign rpmdevtools sed tar which
+          dnf -y install curl createrepo_c findutils git gnupg2 mock rpm-build rpm-sign rpmdevtools tar which
+          FV="$(rpm -E %fedora)"; MC="fedora-${FV}-${RPM_ARCH}"
+          export SPECS=/work/sonicde-rpmspecs RESULTS=/work/mock-results LOCAL=/work/localrepo WWW=/work/wwwroot GNUPGHOME=/work/.gpg
+          export BIN="$WWW/fedora-${FV}/${RPM_ARCH}" SRC="$WWW/fedora-${FV}/source" FEDORA_VERSION="$FV" MOCK_CONFIG="$MC"
+          mkdir -p "$SPECS" "$RESULTS" "$LOCAL" "$BIN" "$SRC" /rpm-cache && chmod 700 "$GNUPGHOME"
+          createrepo_c "$LOCAL"
 
-          FEDORA_VERSION="$(rpm -E %fedora)"
-          export FEDORA_VERSION MOCK_CONFIG="fedora-${FEDORA_VERSION}-${RPM_ARCH}"
-          export SPECS=/work/sonicde-rpmspecs RESULTS=/work/mock-results LOCAL_REPO=/work/localrepo WWW=/work/wwwroot GNUPGHOME=/work/.gpg
-          export BIN_REPO="$WWW/fedora-${FEDORA_VERSION}/${RPM_ARCH}" SRC_REPO="$WWW/fedora-${FEDORA_VERSION}/source"
-          mkdir -p "$RESULTS" "$LOCAL_REPO" "$BIN_REPO" "$SRC_REPO" /rpm-cache
-          chmod 700 "$GNUPGHOME"
-
-          find /rpm-cache -type f -name '*.rpm' ! -name '*.src.rpm' -exec cp -f {} "$LOCAL_REPO" \; || true
-          createrepo_c "$LOCAL_REPO"
-
-          FPR="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"
-          test -n "$FPR"
+          FPR="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"; test -n "$FPR"
           gpg --batch --armor --export "$FPR" > "$WWW/RPM-GPG-KEY-sonicde"
+          rpm --import "$WWW/RPM-GPG-KEY-sonicde"
+          chown -R root:root "$GNUPGHOME" || true
           cat >/root/.rpmmacros <<RPMMACROS
           %_signature gpg
           %_gpg_name $FPR
@@ -120,129 +96,82 @@ jobs:
           RPMMACROS
 
           git clone --depth 1 --branch "$SPECS_GIT_REF" "$SPECS_GIT_URL" "$SPECS"
-
           cat >/usr/local/bin/copr-cli <<'SHIM'
           #!/usr/bin/env bash
           set -euo pipefail
-          [[ "${1:-}" == buildscm ]] || { echo "fake copr-cli only supports buildscm" >&2; exit 2; }
-          shift
+          [[ ${1:-} == buildscm ]] || exit 2; shift
           subdir= spec_name=
-          while [[ $# -gt 0 ]]; do
-            case "$1" in
-              --subdir) subdir="${2:-}"; shift 2 ;;
-              --spec) spec_name="${2:-}"; shift 2 ;;
-              *) shift ;;
-            esac
-          done
-          [[ -n "$subdir" && -n "$spec_name" ]] || { echo "missing --subdir/--spec" >&2; exit 2; }
-
-          pkgdir="$SPECS/$subdir"; spec="$pkgdir/$spec_name"; out="$RESULTS/$subdir"; cache="/rpm-cache/$subdir"
-          mkdir -p "$out/srpm" "$out/rpm"
+          while [[ $# -gt 0 ]]; do case "$1" in --subdir) subdir=$2; shift 2;; --spec) spec_name=$2; shift 2;; *) shift;; esac; done
+          [[ -n $subdir && -n $spec_name ]] || exit 2
+          p="$SPECS/$subdir"; s="$p/$spec_name"; o="$RESULTS/$subdir"; c="/rpm-cache/$subdir"
+          mkdir -p "$o/srpm" "$o/rpm" "$c"
           log(){ echo "[$subdir] $*"; }
-          [[ -f "$spec" ]] || { log "missing spec: $spec"; exit 1; }
-
-          if compgen -G "$cache/*.rpm" >/dev/null; then
-            log "using cached RPMs"
-            flock /work/localrepo.lock bash -c 'cp -f "$1"/*.rpm "$2"/; createrepo_c --update "$2"' _ "$cache" "$LOCAL_REPO"
-            exit 0
+          [[ -f $s ]] || { log "missing spec $s"; exit 1; }
+          sp="/work/patches/${spec_name}.patch"; xp="/work/patches/${spec_name%.spec}.source.patch"
+          [[ ! -f $sp ]] || git -C "$SPECS" apply --unidiff-zero --verbose "$sp"
+          [[ ! -f $xp ]] || cp -f "$xp" "$p/"
+          fp="$({ echo "$UPSTREAM_SHA $FEDORA_VERSION $RPM_ARCH $subdir"; sha256sum "$s"; [[ ! -f $xp ]] || sha256sum "$xp"; } | sha256sum | awk '{print $1}')"
+          if [[ -f $c/.fingerprint && $(cat "$c/.fingerprint") == "$fp" ]] && compgen -G "$c/*.rpm" >/dev/null; then
+            log "using cached RPMs"; flock /work/localrepo.lock bash -c 'cp -f "$1"/*.rpm "$2"/; createrepo_c --update "$2"' _ "$c" "$LOCAL"; exit 0
           fi
-
-          spec_patch="/work/patches/${spec_name}.patch"
-          [[ ! -f "$spec_patch" ]] || git -C "$SPECS" apply --unidiff-zero --verbose "$spec_patch"
-          src_patch="/work/patches/${spec_name%.spec}.source.patch"
-          [[ ! -f "$src_patch" ]] || cp -f "$src_patch" "$pkgdir/"
-
-          spec_url="$(awk 'BEGIN{IGNORECASE=1} /^URL:[[:space:]]*/ {sub(/^URL:[[:space:]]*/, ""); print; exit}' "$spec")"
-          [[ -n "$spec_url" ]] || { log "missing URL tag"; exit 1; }
-
-          spectool --define "url $spec_url" -g -C "$pkgdir" "$spec"
-          mapfile -t sources < <(rpmspec --define "url $spec_url" -P "$spec" | awk '/^Source[0-9]*:/ {s=$2; sub(/^.*#\//,"",s); sub(/^.*\//,"",s); print s}')
-          for s in "${sources[@]}"; do
-            [[ -f "$pkgdir/$s" ]] && continue
-            url="$(rpmspec --define "url $spec_url" -P "$spec" | awk -v want="$s" '/^Source[0-9]*:/ {u=$2; o=u; sub(/^.*#\//,"",o); sub(/^.*\//,"",o); if(o==want){sub(/#.*/,"",u); print u; exit}}')"
-            [[ -n "$url" && "$url" != *'%{'* ]] || { log "unresolved source URL for $s"; exit 1; }
-            curl -fL --retry 3 --retry-delay 5 -o "$pkgdir/$s" "$url"
-          done
-
-          rpmbuild -bs "$spec" --define "url $spec_url" --define "_sourcedir $pkgdir" --define "_srcrpmdir $out/srpm"
-          srpm="$(find "$out/srpm" -maxdepth 1 -name '*.src.rpm' -print -quit)"
-          [[ -n "$srpm" ]] || { log "no SRPM generated"; exit 1; }
-
-          if ! mock -r "$MOCK_CONFIG" --uniqueext "$subdir" --define "url $spec_url" --enable-network --resultdir "$out/rpm" --addrepo "file://$LOCAL_REPO" --rebuild "$srpm"; then
-            log "mock failed"
-            for f in root.log build.log state.log installed_pkgs.log; do [[ ! -f "$out/rpm/$f" ]] || { echo "===== $subdir :: $f ====="; tail -n 300 "$out/rpm/$f"; }; done
-            exit 1
+          url="$(awk 'BEGIN{IGNORECASE=1} /^URL:[[:space:]]*/ {sub(/^URL:[[:space:]]*/, ""); print; exit}' "$s")"; [[ -n $url ]] || exit 1
+          spectool --define "url $url" -g -C "$p" "$s"
+          while read -r name srcurl; do [[ -f $p/$name ]] || curl -fL --retry 3 --retry-delay 5 -o "$p/$name" "${srcurl%%#*}"; done < <(
+            rpmspec --define "url $url" -P "$s" | awk '/^Source[0-9]*:/ {u=$2; n=u; sub(/^.*#\//,"",n); sub(/^.*\//,"",n); print n, u}'
+          )
+          rpmbuild -bs "$s" --define "url $url" --define "_sourcedir $p" --define "_srcrpmdir $o/srpm"
+          srpm="$(find "$o/srpm" -maxdepth 1 -name '*.src.rpm' -print -quit)"; [[ -n $srpm ]] || exit 1
+          if ! mock -r "$MOCK_CONFIG" --uniqueext "$subdir" --define "url $url" --enable-network --resultdir "$o/rpm" --addrepo "file://$LOCAL" --rebuild "$srpm"; then
+            for f in root.log build.log state.log installed_pkgs.log; do [[ ! -f $o/rpm/$f ]] || { echo "===== $subdir :: $f ====="; tail -n 300 "$o/rpm/$f"; }; done; exit 1
           fi
-
-          mkdir -p "$cache"
-          cp -f "$out"/rpm/*.rpm "$cache"/
-          cp -f "$out"/srpm/*.src.rpm "$cache"/
-          flock /work/localrepo.lock bash -c 'cp -f "$1"/*.rpm "$2"/; createrepo_c --update "$2"' _ "$cache" "$LOCAL_REPO"
+          echo "$fp" > "$c/.fingerprint"; cp -f "$o"/rpm/*.rpm "$c"/; cp -f "$o"/srpm/*.src.rpm "$c"/
+          flock /work/localrepo.lock bash -c 'cp -f "$1"/*.rpm "$2"/; createrepo_c --update "$2"' _ "$c" "$LOCAL"
           SHIM
           chmod +x /usr/local/bin/copr-cli
-
           mock -r "$MOCK_CONFIG" --init
           (cd "$SPECS" && ./copr-build.sh all)
 
-          find /rpm-cache -type f -name '*.rpm' ! -name '*.src.rpm' -exec cp -f {} "$BIN_REPO" \;
-          find /rpm-cache -type f -name '*.src.rpm' -exec cp -f {} "$SRC_REPO" \;
-
-          shopt -s nullglob
-          rpms=("$BIN_REPO"/*.rpm "$SRC_REPO"/*.src.rpm)
-          [[ ${#rpms[@]} -gt 0 ]] || { echo "No RPMs to publish"; exit 1; }
+          find /rpm-cache -type f -name '*.rpm' ! -name '*.src.rpm' -exec cp -f {} "$BIN" \;
+          find /rpm-cache -type f -name '*.src.rpm' -exec cp -f {} "$SRC" \;
+          shopt -s nullglob; rpms=("$BIN"/*.rpm "$SRC"/*.src.rpm); [[ ${#rpms[@]} -gt 0 ]]
           for r in "${rpms[@]}"; do rpmsign --addsign "$r"; rpm --checksig "$r"; done
-
-          createrepo_c "$BIN_REPO"
-          createrepo_c "$SRC_REPO"
-          gpg --batch --yes --armor --detach-sign "$BIN_REPO/repodata/repomd.xml"
-          gpg --batch --yes --armor --detach-sign "$SRC_REPO/repodata/repomd.xml"
-
-          cat >"$WWW/sonicde-fedora-${FEDORA_VERSION}.repo" <<REPO
-          [sonicde-fedora-${FEDORA_VERSION}]
-          name=SonicDE Fedora ${FEDORA_VERSION}
-          baseurl=https://${REPO_OWNER}.github.io/${REPO_NAME}/fedora-${FEDORA_VERSION}/${RPM_ARCH}
+          createrepo_c "$BIN"; createrepo_c "$SRC"
+          gpg --batch --yes --armor --detach-sign "$BIN/repodata/repomd.xml"
+          gpg --batch --yes --armor --detach-sign "$SRC/repodata/repomd.xml"
+          cat >"$WWW/sonicde-fedora-${FV}.repo" <<REPO
+          [sonicde-fedora-${FV}]
+          name=SonicDE Fedora ${FV}
+          baseurl=https://${REPO_OWNER}.github.io/${REPO_NAME}/fedora-${FV}/${RPM_ARCH}
           enabled=1
           gpgcheck=1
           repo_gpgcheck=1
           gpgkey=https://${REPO_OWNER}.github.io/${REPO_NAME}/RPM-GPG-KEY-sonicde
           skip_if_unavailable=True
           REPO
-
           cat >"$WWW/index.html" <<HTML
-          <!doctype html><html><head><meta charset="utf-8"><title>SonicDE RPM Repo</title></head><body>
-          <h1>SonicDE RPM Repo</h1>
-          <p>Fedora ${FEDORA_VERSION} / ${RPM_ARCH}</p>
-          <p><a href="sonicde-fedora-${FEDORA_VERSION}.repo">Download .repo file</a></p>
-          <p><a href="RPM-GPG-KEY-sonicde">Download RPM GPG key</a></p>
-          <p><a href="fedora-${FEDORA_VERSION}/${RPM_ARCH}/">Browse RPMs</a></p>
-          </body></html>
+          <!doctype html><meta charset="utf-8"><title>SonicDE RPM Repo</title><h1>SonicDE RPM Repo</h1><p>Fedora ${FV} / ${RPM_ARCH}</p><p><a href="sonicde-fedora-${FV}.repo">Repo file</a> · <a href="RPM-GPG-KEY-sonicde">GPG key</a> · <a href="fedora-${FV}/${RPM_ARCH}/">RPMs</a></p>
           HTML
           EOF
 
-      - name: Save RPM cache
-        if: always() && steps.build.outcome != 'skipped'
+      - if: always() && steps.build.outcome != 'skipped'
         uses: actions/cache/save@v4
         with:
           path: rpm-cache
           key: sonicde-rpms-${{ runner.os }}-${{ steps.upstream.outputs.sha }}-${{ hashFiles('patches/**', '.github/workflows/*.yml') }}-${{ github.run_id }}
 
-      - name: Mark upstream built
-        if: steps.build.outcome == 'success'
+      - if: steps.build.outcome == 'success'
         run: echo '${{ steps.upstream.outputs.sha }}' > .built-upstream-sha
 
-      - name: Save build marker
-        if: steps.build.outcome == 'success'
+      - if: steps.build.outcome == 'success' && steps.marker.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .built-upstream-sha
           key: sonicde-built-${{ steps.upstream.outputs.sha }}
 
-      - name: Deploy Pages
-        if: steps.build.outcome == 'success'
+      - if: steps.build.outcome == 'success'
         uses: actions/upload-pages-artifact@v3
         with:
           path: wwwroot
 
-      - name: Publish Pages
-        if: steps.build.outcome == 'success'
+      - if: steps.build.outcome == 'success'
         uses: actions/deploy-pages@v4
