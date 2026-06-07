@@ -1,0 +1,6 @@
+diff --git a/sonic-frameworks-windowsystem/sonic-frameworks-windowsystem.spec b/sonic-frameworks-windowsystem/sonic-frameworks-windowsystem.spec
+--- a/sonic-frameworks-windowsystem/sonic-frameworks-windowsystem.spec
++++ b/sonic-frameworks-windowsystem/sonic-frameworks-windowsystem.spec
+@@ -8 +8 @@
+-Version:	6.25.0
++Version:	6.26.0
